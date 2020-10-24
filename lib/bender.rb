@@ -1,6 +1,7 @@
 require 'bender/version'
 require 'matrix'
 require 'forwardable'
+require 'set'
 
 module Bender
   class Cell < Struct.new(:position, :value)
@@ -38,6 +39,10 @@ module Bender
 
     def teleporter?
       CityMap::TELEPORTER == value
+    end
+
+    def start?
+      CityMap::START == value
     end
   end
 
@@ -98,6 +103,10 @@ module Bender
       CARDINAL_DIRECTIONS[abbreviated_value].downcase
     end
 
+    def blankify(position)
+      street_map[*position] = ' '
+    end
+
     def next_teleporter(current_teleporter)
       new_index = nil
 
@@ -148,7 +157,7 @@ module Bender
     def_delegator :city_map, :cardinal_direction?
 
     delegate [:inverted?, :finished?, :breakable?, :teleporter?, :cell_position,
-              :cell_value] => :cell
+              :cell_value, :start?] => :cell
 
     DEFAULT_MOVE_ORDER = [
       CityMap::SOUTH,
@@ -167,11 +176,32 @@ module Bender
       @options     = options
     end
 
-    def follows_teleportation?
-      prior_state && prior_state.respond_to?(:prior_state_class)
+    def decorators
+      options[:decorators]
     end
 
-    def transition_allowed_to?(next_cell)
+    def method_missing(m, *args, &block)
+      overridable_method = "_#{m}"
+
+      # TODO: Prefer Teleporter over other decorators to make jump
+      if m == :next_state && Array(decorators).include?(TeleporterDecorator)
+        return _next_state
+      end
+
+      decorator_class ||= Array(decorators).detect do |decorator_class|
+        decorator_class.instance_methods.include?(m)
+      end
+
+      if decorator_class
+        return decorator_class.new(self).send(m, *args)
+      end
+
+      if respond_to?(overridable_method)
+        send(overridable_method, *args)
+      end
+    end
+
+    def _transition_allowed_to?(next_cell)
       [
         CityMap::OPEN_SPACE,
         CityMap::FINISH,
@@ -181,25 +211,24 @@ module Bender
       ].include?(next_cell.value) || cardinal_direction?(next_cell.value)
     end
 
-    def move_order
+    def _move_order
       options[:move_order] || DEFAULT_MOVE_ORDER
     end
 
-    def next_state
+    def _next_state
       if prior_state && prior_state.direction
-        _next_state = make_next_adjacent_move(prior_state.direction)
-        return _next_state if _next_state
-
-        make_next_allowed_move
-      else
-        make_next_allowed_move
+        candidate_state = make_next_adjacent_move(prior_state.direction)
+        return candidate_state if candidate_state
       end
-    end
 
-    private
+      make_next_allowed_move
+    end
 
     def make_next_adjacent_move(candidate_direction)
       next_cell = next_move_in(candidate_direction.downcase)
+
+      # TODO: could be problematic for loop
+      return if journey.states.map(&:cell_position).include?(next_cell.position)
 
       if transition_allowed_to?(next_cell)
         self.direction = candidate_direction
@@ -209,12 +238,12 @@ module Bender
 
     def make_next_allowed_move
       move_order.each do |candidate_direction|
-        _next_state = make_next_adjacent_move(candidate_direction)
-        return _next_state if _next_state
+        candidate_state = make_next_adjacent_move(candidate_direction)
+        return candidate_state if candidate_state
       end
     end
 
-    def next_move_in(direction)
+    def _next_move_in(direction)
       city_map.send(direction, prior_state.cell)
     end
 
@@ -226,31 +255,80 @@ module Bender
     end
   end
 
-  class JourneyStateModified < JourneyState
-    def initialize(journey, prior_state, options={})
-      super
+  class Decorator
+    extend Forwardable
+    delegate [ :prior_state, :journey, :city_map ] => :state
 
-      @modified_direction = options[:modified_direction]
+    def initialize(state)
+      @state = state
     end
 
-    def next_state
-      if transition_allowed_to?(next_cell)
-        make_next_state(next_cell, modified_direction.upcase)
-      end
-    end
-
-    def next_cell
-      @next_cell ||= next_move_in(modified_direction)
+    def options
+      state.options
     end
 
     private
 
-    attr_reader :modified_direction
+    attr_reader :state
   end
 
-  class JourneyStateBreaker < JourneyState
+  class ModifiedDecorator < Decorator
+    def next_state
+      if state.transition_allowed_to?(next_cell)
+        state.make_next_state(next_cell, options[:modified_direction].upcase)
+      else
+        state.make_next_allowed_move
+      end
+    end
+
+    private
+
+    def next_cell
+      @next_cell ||= next_move_in(options[:modified_direction])
+    end
+
+    def next_move_in(direction)
+      state.city_map.send(direction, state.prior_state.cell)
+    end
+  end
+
+  class BreakerDecorator < Decorator
     def transition_allowed_to?(next_cell)
-      super || CityMap::BREAKABLES.include?(next_cell.value)
+      cell_value = next_cell.value
+
+      result = state._transition_allowed_to?(next_cell) ||
+        CityMap::BREAKABLES.include?(cell_value)
+
+        if blankify_mode?(cell_value)
+          city_map.blankify(next_cell.position)
+        end
+
+      result
+    end
+
+    private
+
+    def blankify_mode?(cell_value)
+      CityMap::BREAKABLES.include?(cell_value) &&
+        journey.breakables_encountered_count == 1
+    end
+  end
+
+  class TeleporterDecorator < Decorator
+    def next_move_in(candidate_direction)
+      city_map.next_teleporter(starting_teleporter)
+    end
+
+    private
+
+    def starting_teleporter
+      prior_state.cell_position
+    end
+  end
+
+  class InverterDecorator < Decorator
+    def move_order
+      JourneyState::INVERTED_MOVE_ORDER
     end
   end
 
@@ -262,93 +340,70 @@ module Bender
     end
   end
 
-  class JourneyStateTeleporter < JourneyState
-
-    attr_reader :prior_state_class
-
-    def initialize(journey, prior_state, options={})
-      super
-
-      @prior_state_class = options[:prior_state_class]
-    end
-
-    def next_move_in(_)
-      city_map.next_teleporter(starting_teleporter)
-    end
-
-    private
-
-    def starting_teleporter
-      prior_state.cell_position
-    end
-  end
-
   class Journey
     attr_reader :city_map
+    attr_accessor :states, :decorators
 
     def initialize(city_map)
-      @city_map = city_map
-      @states   = []
+      @city_map   = city_map
+      @states     = []
+      @decorators = Set.new
     end
 
     def call
       next_state  = JourneyStateStart.new(self, nil)
-      state_class = JourneyState
       options     = {}
 
       until next_state.finished? do
         next_value = next_state.cell_value
 
-        if next_state.follows_teleportation?
-          state_class = next_state.prior_state.prior_state_class
-          options[:prior_state_class] = nil
-
-          states.pop
-        end
+        toggle(TeleporterDecorator) if decorators.include?(TeleporterDecorator)
 
         if next_state.cardinal_direction?(next_value)
-          state_class                  = JourneyStateModified
+          decorators << ModifiedDecorator
           options[:modified_direction] = city_map.modified_direction_for(next_value)
 
         elsif next_state.inverted?
-          toggle_move_order(options)
+          toggle(InverterDecorator)
 
         elsif next_state.breakable?
-          state_class = toggle_breakable(state_class)
+          toggle(BreakerDecorator)
 
         elsif next_state.teleporter?
-          unless next_state.follows_teleportation?
-            options[:prior_state_class] = state_class
-            state_class = JourneyStateTeleporter
-          end
+          perform_half_of_teleport_loop
         end
 
-        next_state = state_class.new(self, next_state, options).next_state
+        options[:decorators] = decorators
+        next_state           = JourneyState.new(self, next_state, options).next_state
+
         self.states << next_state
       end
 
       states.map(&:direction)
     end
 
+    def breakables_encountered_count
+      states.select(&:breakable?).count
+    end
+
     private
 
-    attr_accessor :states
-
-    def toggle_breakable(current_state_class)
-      if current_state_class == JourneyStateBreaker
-        JourneyState
+    def toggle(decorator)
+      if decorators.include?(decorator)
+        decorators.reject! { |d| d == decorator }
       else
-        JourneyStateBreaker
+        decorators << decorator
       end
     end
 
-    def toggle_move_order(options)
-      if options.key?(:move_order)
-        options.delete(:move_order)
-      else
-        options[:move_order] = JourneyState::INVERTED_MOVE_ORDER
-      end
+    def perform_half_of_teleport_loop
+      completing_teleport_jump? ? states.pop : self.decorators.add(TeleporterDecorator)
     end
+
+    def completing_teleport_jump?
+      states.count > 1 && states[-1].teleporter? && states[-2].teleporter?
+    end
+
   end
 
 end

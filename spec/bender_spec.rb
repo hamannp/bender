@@ -95,7 +95,7 @@ RSpec.describe Bender do
     let(:file_name) { 'all_together.txt' }
     let(:expected_route) { %w[SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH WEST WEST NORTH NORTH NORTH NORTH NORTH NORTH NORTH NORTH NORTH NORTH NORTH NORTH EAST EAST EAST EAST EAST EAST EAST EAST EAST EAST EAST EAST SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH WEST WEST WEST WEST WEST WEST SOUTH SOUTH SOUTH EAST EAST EAST ] }
 
-    xit "follows the correct route" do
+    it "follows the correct route" do
       expect(Bender::Journey.new(city_map).call).to eq expected_route
     end
   end
