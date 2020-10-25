@@ -174,8 +174,9 @@ module Bender
       if cell
         cell.count_visit
         if cell.visited_count > 2
-          cell = Cell.new(new_index, 'LOOP')
-
+          if loop?(new_index)
+            cell = Cell.new(new_index, 'LOOP')
+          end
         end
         cell
       else
@@ -189,7 +190,7 @@ module Bender
       cell
     end
 
-    def loop?
+    def loop?(new_index)
       partitions = visited_sequence.split("#{new_index.join('-')}*").map do |sub|
         sub.split('*')
       end.select { |partition| partition.length > 3 }.map(&:sort)
@@ -440,6 +441,10 @@ module Bender
         options[:decorators] = decorators
         next_state           = JourneyState.new(self, next_state, options).next_state
 
+        puts "#{next_state.direction} "
+        if states.count > 2
+          #binding.pry
+        end
         self.states << next_state
       end
 
