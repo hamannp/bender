@@ -6,6 +6,8 @@ require 'set'
 module Bender
   class Cell < Struct.new(:position, :value)
 
+    attr_accessor :visited_count
+
     alias cell_position position
     alias cell_value value
 
@@ -44,6 +46,18 @@ module Bender
     def start?
       CityMap::START == value
     end
+
+    def loop?
+      CityMap::LOOP == value
+    end
+
+    def count_visit
+      if visited_count
+        self.visited_count += 1
+      else
+        self.visited_count = 1
+      end
+    end
   end
 
   class CityMap
@@ -59,6 +73,7 @@ module Bender
     EAST       = 'EAST'.freeze
     WEST       = 'WEST'.freeze
     BREAKABLES = %w[X]
+    LOOP       = 'LOOP'.freeze
 
     CARDINAL_DIRECTIONS = {
       'E' => EAST,
@@ -67,8 +82,12 @@ module Bender
       'S' => SOUTH
     }.freeze
 
+    attr_accessor :visited_map, :visited_sequence
+
     def initialize(lines)
-      @street_map = Matrix[*lines]
+      @street_map       = Matrix[*lines]
+      @visited_map      = {}
+      @visited_sequence = ""
     end
 
     def start
@@ -103,8 +122,10 @@ module Bender
       CARDINAL_DIRECTIONS[abbreviated_value].downcase
     end
 
-    def blankify(position)
-      street_map[*position] = ' '
+    def blankify(next_cell)
+      next_cell.value                 = ' '
+      street_map[*next_cell.position] = ' '
+      self.visited_map[next_cell.position] = next_cell
     end
 
     def next_teleporter(current_teleporter)
@@ -141,11 +162,43 @@ module Bender
       if new_index[1] == -1
         Cell.new(nil, nil)
       else
-        Cell.new(new_index, street_map[*new_index])
+        cache_visit(new_index)
       end
     end
 
     alias move next_cell
+
+    def cache_visit(new_index)
+      cell = visited_map[new_index]
+
+      if cell
+        cell.count_visit
+        if cell.visited_count > 2
+          cell = Cell.new(new_index, 'LOOP')
+
+        end
+        cell
+      else
+        cell = Cell.new(new_index, street_map[*new_index])
+        visited_map[new_index] = cell
+        cell
+      end
+
+      self.visited_sequence << "#{new_index.join('-')}*"
+
+      cell
+    end
+
+    def loop?
+      partitions = visited_sequence.split("#{new_index.join('-')}*").map do |sub|
+        sub.split('*')
+      end.select { |partition| partition.length > 3 }.map(&:sort)
+
+      if partitions.count != partitions.uniq.count
+        true
+      end
+    end
+
   end
 
   class JourneyState
@@ -157,7 +210,7 @@ module Bender
     def_delegator :city_map, :cardinal_direction?
 
     delegate [:inverted?, :finished?, :breakable?, :teleporter?, :cell_position,
-              :cell_value, :start?] => :cell
+              :cell_value, :start?, :loop?] => :cell
 
     DEFAULT_MOVE_ORDER = [
       CityMap::SOUTH,
@@ -227,8 +280,12 @@ module Bender
     def make_next_adjacent_move(candidate_direction)
       next_cell = next_move_in(candidate_direction.downcase)
 
-      # TODO: could be problematic for loop
-      return if journey.states.map(&:cell_position).include?(next_cell.position)
+      if next_cell.value == 'LOOP'
+        return JourneyState.new(journey, prior_state).tap do |state|
+          state.cell = next_cell
+          state.direction = 'LOOP'
+        end
+      end
 
       if transition_allowed_to?(next_cell)
         self.direction = candidate_direction
@@ -300,7 +357,7 @@ module Bender
         CityMap::BREAKABLES.include?(cell_value)
 
         if blankify_mode?(cell_value)
-          city_map.blankify(next_cell.position)
+          city_map.blankify(next_cell)
         end
 
       result
@@ -351,13 +408,20 @@ module Bender
     end
 
     def call
-      next_state  = JourneyStateStart.new(self, nil)
-      options     = {}
+      next_state = JourneyStateStart.new(self, nil)
+      options    = {}
 
       until next_state.finished? do
-        next_value = next_state.cell_value
+
+        if next_state.loop?
+          self.states = [next_state]
+
+          break
+        end
 
         toggle(TeleporterDecorator) if decorators.include?(TeleporterDecorator)
+
+        next_value = next_state.cell_value
 
         if next_state.cardinal_direction?(next_value)
           decorators << ModifiedDecorator

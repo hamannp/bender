@@ -104,7 +104,7 @@ RSpec.describe Bender do
     let(:file_name) { 'loop.txt' }
     let(:expected_route) { %w[LOOP] }
 
-    xit "follows the correct route" do
+    it "follows the correct route" do
       expect(Bender::Journey.new(city_map).call).to eq expected_route
     end
   end
