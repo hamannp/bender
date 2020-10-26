@@ -110,13 +110,15 @@ RSpec.describe Bender do
   end
 
   context 'Multiple Loops' do
-    let(:file_name) { 'loop.txt' }
+    let(:file_name) { 'multiple_loops.txt' }
     let(:expected_route) { %w[ SOUTH SOUTH SOUTH SOUTH EAST EAST EAST EAST NORTH
                            NORTH NORTH NORTH WEST WEST SOUTH SOUTH SOUTH SOUTH SOUTH
                            SOUTH SOUTH SOUTH EAST EAST EAST NORTH WEST WEST WEST WEST
                            WEST SOUTH SOUTH EAST EAST EAST EAST NORTH NORTH NORTH
                            NORTH NORTH NORTH NORTH NORTH NORTH WEST WEST SOUTH SOUTH
-                           SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH
+                           SOUTH SOUTH SOUTH SOUTH SOUTH SOUTH
+
+                           SOUTH SOUTH SOUTH SOUTH
                            SOUTH EAST EAST EAST NORTH WEST WEST WEST WEST WEST SOUTH
                            SOUTH EAST EAST EAST EAST NORTH NORTH NORTH NORTH NORTH
                            NORTH NORTH NORTH NORTH NORTH NORTH NORTH NORTH NORTH WEST

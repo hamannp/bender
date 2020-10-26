@@ -193,10 +193,10 @@ module Bender
     def loop?(new_index)
       partitions = visited_sequence.split("#{new_index.join('-')}*").map do |sub|
         sub.split('*')
-      end.select { |partition| partition.length > 3 }.map(&:sort)
+      end.select { |partition| partition.length >= 2 }.map(&:sort)
 
       if partitions.count != partitions.uniq.count
-        true
+        return true
       end
     end
 
@@ -289,6 +289,10 @@ module Bender
       end
 
       if transition_allowed_to?(next_cell)
+        if next_cell.breakable?
+          journey.decorators.reject! { |d| d == ModifiedDecorator }
+        end
+
         self.direction = candidate_direction
         make_next_state(next_cell, candidate_direction)
       end
@@ -430,6 +434,7 @@ module Bender
 
         elsif next_state.inverted?
           toggle(InverterDecorator)
+          decorators.reject! { |d| d == ModifiedDecorator }
 
         elsif next_state.breakable?
           toggle(BreakerDecorator)
@@ -439,12 +444,10 @@ module Bender
         end
 
         options[:decorators] = decorators
-        next_state           = JourneyState.new(self, next_state, options).next_state
 
-        puts "#{next_state.direction} "
-        if states.count > 2
-          #binding.pry
-        end
+        next_state = JourneyState.new(self, next_state, options).next_state
+        puts "#{next_state.direction} - #{next_state.cell_value} - #{next_state.cell_position}"
+
         self.states << next_state
       end
 
