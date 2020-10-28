@@ -204,10 +204,10 @@ module Bender
 
   class JourneyState
     attr_accessor :direction, :cell
-    attr_reader :journey, :prior_state, :options
+    attr_reader :journey, :prior_state
 
     extend Forwardable
-    def_delegator :journey, :city_map
+    delegate [:state_manager, :city_map] => :journey
     def_delegator :city_map, :cardinal_direction?
 
     delegate [:inverted?, :finished?, :breakable?, :teleporter?, :cell_position,
@@ -222,16 +222,15 @@ module Bender
 
     INVERTED_MOVE_ORDER = DEFAULT_MOVE_ORDER.reverse.freeze
 
-    def initialize(journey, prior_state, options={})
+    def initialize(journey, prior_state)
       @journey     = journey
       @prior_state = prior_state
       @direction   = nil
       @cell        = nil
-      @options     = options
     end
 
     def decorators
-      options[:decorators]
+      state_manager.decorators
     end
 
     def method_missing(m, *args, &block)
@@ -266,7 +265,7 @@ module Bender
     end
 
     def _move_order
-      options[:move_order] || DEFAULT_MOVE_ORDER
+      DEFAULT_MOVE_ORDER
     end
 
     def _next_state
@@ -291,6 +290,8 @@ module Bender
       if transition_allowed_to?(next_cell)
         if next_cell.breakable?
           journey.decorators.reject! { |d| d == ModifiedDecorator }
+          journey.state_manager.decorators.reject! { |d| d == ModifiedDecorator }
+
         end
 
         self.direction = candidate_direction
@@ -325,10 +326,6 @@ module Bender
       @state = state
     end
 
-    def options
-      state.options
-    end
-
     private
 
     attr_reader :state
@@ -337,7 +334,7 @@ module Bender
   class ModifiedDecorator < Decorator
     def next_state
       if state.transition_allowed_to?(next_cell)
-        state.make_next_state(next_cell, options[:modified_direction].upcase)
+        state.make_next_state(next_cell, journey.state_manager.modified_direction.upcase)
       else
         state.make_next_allowed_move
       end
@@ -346,7 +343,7 @@ module Bender
     private
 
     def next_cell
-      @next_cell ||= next_move_in(options[:modified_direction])
+      @next_cell ||= next_move_in(journey.state_manager.modified_direction)
     end
 
     def next_move_in(direction)
@@ -395,7 +392,7 @@ module Bender
   end
 
   class JourneyStateStart < JourneyState
-    def initialize(journey, prior_state, options={})
+    def initialize(journey, prior_state)
       super
 
       @cell = city_map.start
@@ -403,18 +400,30 @@ module Bender
   end
 
   class Journey
-    attr_reader :city_map
+    attr_reader :city_map, :state_manager
     attr_accessor :states, :decorators
+
+    extend Forwardable
+    delegate [
+      :toggle,
+      :perform_half_of_teleport_loop,
+      :handle_modified,
+      :handle_breakable,
+      :handle_inverted,
+      :complete_teleportation,
+      :in_the_teleportation_tunnel?
+    ] => :state_manager
 
     def initialize(city_map)
       @city_map   = city_map
       @states     = []
       @decorators = Set.new
+
+      @state_manager = StateManager.new(self)
     end
 
     def call
       next_state = JourneyStateStart.new(self, nil)
-      options    = {}
 
       until next_state.finished? do
 
@@ -424,28 +433,25 @@ module Bender
           break
         end
 
-        toggle(TeleporterDecorator) if decorators.include?(TeleporterDecorator)
+        complete_teleportation if in_the_teleportation_tunnel?
 
         next_value = next_state.cell_value
 
         if next_state.cardinal_direction?(next_value)
-          decorators << ModifiedDecorator
-          options[:modified_direction] = city_map.modified_direction_for(next_value)
+          direction = city_map.modified_direction_for(next_value)
+          handle_modified(direction)
 
         elsif next_state.inverted?
-          toggle(InverterDecorator)
-          decorators.reject! { |d| d == ModifiedDecorator }
+          handle_inverted
 
         elsif next_state.breakable?
-          toggle(BreakerDecorator)
+          handle_breakable
 
         elsif next_state.teleporter?
           perform_half_of_teleport_loop
         end
 
-        options[:decorators] = decorators
-
-        next_state = JourneyState.new(self, next_state, options).next_state
+        next_state = JourneyState.new(self, next_state).next_state
         puts "#{next_state.direction} - #{next_state.cell_value} - #{next_state.cell_position}"
 
         self.states << next_state
@@ -458,22 +464,60 @@ module Bender
       states.select(&:breakable?).count
     end
 
-    private
+    class StateManager
+      attr_accessor :decorators, :broken_cells
+      attr_accessor :modified_direction
+      attr_reader :journey
+      attr_reader :modified_direction
 
-    def toggle(decorator)
-      if decorators.include?(decorator)
-        decorators.reject! { |d| d == decorator }
-      else
-        decorators << decorator
+      extend Forwardable
+      def_delegator :journey, :states
+
+      def initialize(journey)
+        @decorators         = Set.new
+        @broken_cells       = []
+        @journey            = journey
+        @modified_direction = modified_direction
       end
-    end
 
-    def perform_half_of_teleport_loop
-      completing_teleport_jump? ? states.pop : self.decorators.add(TeleporterDecorator)
-    end
+      def handle_inverted
+        toggle(InverterDecorator)
+        decorators.reject! { |d| d == ModifiedDecorator }
+      end
 
-    def completing_teleport_jump?
-      states.count > 1 && states[-1].teleporter? && states[-2].teleporter?
+      def handle_modified(direction)
+        decorators << ModifiedDecorator
+        self.modified_direction = direction
+      end
+
+      def handle_breakable
+        toggle(BreakerDecorator)
+      end
+
+      def toggle(decorator)
+        if decorators.include?(decorator)
+          decorators.reject! { |d| d == decorator }
+        else
+          decorators << decorator
+        end
+      end
+
+      def in_the_teleportation_tunnel?
+        decorators.include?(TeleporterDecorator)
+      end
+
+      def complete_teleportation
+        toggle(TeleporterDecorator)
+      end
+
+      def perform_half_of_teleport_loop
+        completing_teleport_jump? ? states.pop : self.decorators.add(TeleporterDecorator)
+      end
+
+      def completing_teleport_jump?
+        states.count > 1 && states[-1].teleporter? && states[-2].teleporter?
+      end
+
     end
 
   end
